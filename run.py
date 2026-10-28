@@ -18,11 +18,14 @@ if __name__ == "__main__":
     n_samples = int(config["n_samples"]) if config["n_samples"] is not None else None
     threshold = config.get("threshold", None)
     input_csv = config.get("input_csv", None)
+    validator_type = config.get("validator_type", "medval")
+    temperature = float(config.get("temperature", 0.0))
+    max_tokens = int(config.get("max_tokens", 1000))
 
     if (config["data"] == "train") and (config["model"].startswith("local")):
-        medval = MedVAL(config["tasks"], "local/" + config["local_model_path"], config["api_base"], api_key, config["data"], n_samples, config["debug"], config["method"], threshold, input_csv)
+        medval = MedVAL(config["tasks"], "local/" + config["local_model_path"], config["api_base"], api_key, config["data"], n_samples, config["debug"], config["method"], threshold, input_csv, validator_type, temperature, max_tokens)
     else:
-        medval = MedVAL(config["tasks"], config["model"], config["api_base"], api_key, config["data"], n_samples, config["debug"], config["method"], threshold, input_csv)
+        medval = MedVAL(config["tasks"], config["model"], config["api_base"], api_key, config["data"], n_samples, config["debug"], config["method"], threshold, input_csv, validator_type, temperature, max_tokens)
 
     if config["data"] == "train":
         medval.generator._compiled = True
@@ -66,11 +69,17 @@ if __name__ == "__main__":
                 print(dspy.inspect_history(n=2))
                 exit()
             
-            df.at[i, "lm_risk_grade"] = result["attack_prediction"]
-            df.at[i, "lm_error_assessment"] = result["err"]
+            if validator_type == "safety":
+                df.at[i, "lm_safety_level"] = result["attack_prediction"]
+            else:
+                df.at[i, "lm_risk_grade"] = result["attack_prediction"]
+                df.at[i, "lm_error_assessment"] = result["err"]
             df.at[i, "lm_reasoning"] = result["reason"]
-        
-        df = df[["#", "id", "task", "reference", "target", "candidate", "lm_reasoning", "lm_error_assessment", "physician_error_assessment", "lm_risk_grade", "physician_risk_grade"]]
+
+        if validator_type == "safety":
+            df = df[["#", "id", "task", "reference", "target", "candidate", "lm_reasoning", "physician_error_assessment", "lm_safety_level", "physician_risk_grade"]]
+        else:
+            df = df[["#", "id", "task", "reference", "target", "candidate", "lm_reasoning", "lm_error_assessment", "physician_error_assessment", "lm_risk_grade", "physician_risk_grade"]]
         df = df.rename(columns={"reference": "input", "target": "reference_output", "candidate": "output"})
         medval.save_results(df, config["method"])
         

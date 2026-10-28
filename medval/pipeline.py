@@ -7,6 +7,7 @@ from dspy.datasets import DataLoader
 from utils.prompts import adversarial_attacks, adversarial_attack_base, error_categories
 from medval.generator import MedVAL_Generator
 from medval.validator import MedVAL_Validator
+from medval.safety_validator import SafetyValidator
 from dspy.clients.lm_local import LocalProvider
 from datasets import load_dataset
 
@@ -14,7 +15,7 @@ def scale_to_unit_interval(val, num_levels):
     return (val - 1) / (num_levels - 1)
 
 class MedVAL(dspy.Module):
-    def __init__(self, tasks, model, api_base, api_key, data, n_samples, debug, method, threshold, input_csv):
+    def __init__(self, tasks, model, api_base, api_key, data, n_samples, debug, method, threshold, input_csv, validator_type="medval", temperature=0.0, max_tokens=1000):
         self.tasks = tasks
         self.model_name = model
         self.api_base = api_base
@@ -25,9 +26,13 @@ class MedVAL(dspy.Module):
         self.method = method
         self.threshold = threshold
         self.input_csv = input_csv
+        self.validator_type = validator_type
+        self.temperature = temperature
+        self.max_tokens = max_tokens
         self.student_model = None
         self.generator = dspy.ChainOfThought(MedVAL_Generator).deepcopy()
-        self.validator = dspy.ChainOfThought(MedVAL_Validator).deepcopy()
+        validator_cls = SafetyValidator if validator_type == "safety" else MedVAL_Validator
+        self.validator = dspy.ChainOfThought(validator_cls).deepcopy()
         self.prompts = self._load_prompts()
         self._configure_lm()
         self.dl = DataLoader()
@@ -44,7 +49,7 @@ class MedVAL(dspy.Module):
             dspy.configure(lm=lm)
             
         else:
-            lm = dspy.LM(model=self.model_name, api_base=self.api_base, api_key=self.api_key)
+            lm = dspy.LM(model=self.model_name, api_base=self.api_base, api_key=self.api_key, temperature=self.temperature, max_tokens=self.max_tokens)
             if self.student_model != None:
                 dspy.settings.experimental = True
                 self.generator.set_lm(lm)
@@ -95,12 +100,20 @@ class MedVAL(dspy.Module):
 
         result = self.validator(instruction=self.prompts[task], reference=reference, candidate=candidate)
         
+        if self.validator_type == "safety":
+            prediction = result["safety_level"]
+            err = None
+        else:
+            prediction = result["risk_level"]
+            err = result["errors"]
+
         if (self.data == "train"):
             candidate_clean = self.generate(reference=reference, attack_level=1, task=task) if target == None else target
             result_clean = self.validator(instruction=self.prompts[task], reference=reference, candidate=candidate_clean)
-            return dspy.Prediction(reason=result["reasoning"], err=result["errors"], attack_prediction=result["risk_level"], attack_level=attack_level, clean_prediction=result_clean["risk_level"])
-        
-        return dspy.Prediction(reason=result["reasoning"], err=result["errors"], attack_prediction=result["risk_level"])
+            clean_pred = result_clean["safety_level"] if self.validator_type == "safety" else result_clean["risk_level"]
+            return dspy.Prediction(reason=result["reasoning"], err=err, attack_prediction=prediction, attack_level=attack_level, clean_prediction=clean_pred)
+
+        return dspy.Prediction(reason=result["reasoning"], err=err, attack_prediction=prediction)
     
     def validator_metric(self, example, pred, trace=None):
         delta = scale_to_unit_interval(pred["attack_level"], num_levels=len(adversarial_attacks))
@@ -121,7 +134,8 @@ class MedVAL(dspy.Module):
         
     def save_results(self, df, method=None):
         df = df.where(pd.notnull(df), "None")
-        df["lm_error_assessment"] = df["lm_error_assessment"].str.replace("\n\n", "\n", regex=False).str.replace("\n \n", "\n", regex=False).str.replace("\\n", "\n", regex=False)
+        if self.validator_type != "safety" and "lm_error_assessment" in df.columns:
+            df["lm_error_assessment"] = df["lm_error_assessment"].str.replace("\n\n", "\n", regex=False).str.replace("\n \n", "\n", regex=False).str.replace("\\n", "\n", regex=False)
 
         results_path = f"results/{method}/"
         os.makedirs(results_path, exist_ok=True)
