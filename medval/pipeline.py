@@ -15,7 +15,7 @@ def scale_to_unit_interval(val, num_levels):
     return (val - 1) / (num_levels - 1)
 
 class MedVAL(dspy.Module):
-    def __init__(self, tasks, model, api_base, api_key, data, n_samples, debug, method, threshold, input_csv, validator_type="medval", temperature=0.0, max_tokens=1000):
+    def __init__(self, tasks, model, api_base, api_key, data, n_samples, debug, method, threshold, input_csv, validator_type="medval", temperature=0.0, max_tokens=1000, cache=True):
         self.tasks = tasks
         self.model_name = model
         self.api_base = api_base
@@ -29,6 +29,7 @@ class MedVAL(dspy.Module):
         self.validator_type = validator_type
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.cache = cache
         self.student_model = None
         self.generator = dspy.ChainOfThought(MedVAL_Generator).deepcopy()
         validator_cls = SafetyValidator if validator_type == "safety" else MedVAL_Validator
@@ -49,7 +50,10 @@ class MedVAL(dspy.Module):
             dspy.configure(lm=lm)
             
         else:
-            lm = dspy.LM(model=self.model_name, api_base=self.api_base, api_key=self.api_key, temperature=self.temperature, max_tokens=self.max_tokens)
+            # cache=False only skips DSPy's local cache; LiteLLM proxy gateways (e.g. Stanford's) also
+            # cache identical requests server-side unless the request body opts out.
+            no_cache = {} if self.cache else {"extra_body": {"cache": {"no-cache": True, "no-store": True}}}
+            lm = dspy.LM(model=self.model_name, api_base=self.api_base, api_key=self.api_key, temperature=self.temperature, max_tokens=self.max_tokens, cache=self.cache, **no_cache)
             if self.student_model != None:
                 dspy.settings.experimental = True
                 self.generator.set_lm(lm)
@@ -132,20 +136,17 @@ class MedVAL(dspy.Module):
         if (trace is not None) or (self.method == "finetune"): return metric_value >= self.threshold
         return metric_value
         
-    def save_results(self, df, method=None):
+    def results_path(self, method=None, output_dir="results"):
+        """{output_dir}/{method}/{validator_type}/{model}/{csv_name}.csv, csv_name defaulting to medval_bench."""
+        csv_name = os.path.splitext(os.path.basename(self.input_csv))[0] if self.input_csv else "medval_bench"
+        return os.path.join(output_dir, method, self.validator_type, self.model_name.split('/')[-1], f"{csv_name}.csv")
+
+    def save_results(self, df, method=None, output_dir="results"):
         df = df.where(pd.notnull(df), "None")
         if self.validator_type != "safety" and "lm_error_assessment" in df.columns:
             df["lm_error_assessment"] = df["lm_error_assessment"].str.replace("\n\n", "\n", regex=False).str.replace("\n \n", "\n", regex=False).str.replace("\\n", "\n", regex=False)
 
-        results_path = f"results/{method}/"
-        os.makedirs(results_path, exist_ok=True)
-        
-        if self.input_csv:
-            csv_name = os.path.splitext(os.path.basename(self.input_csv))[0]
-            file_path = f"{results_path}{self.model_name.split('/')[-1]}/{csv_name}.csv"
-        else:
-            file_path = f"{results_path}{self.model_name.split('/')[-1]}/medval-bench.csv"
-        
+        file_path = self.results_path(method, output_dir)
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
         df.to_csv(file_path, index=False)
         print(f"\nResults saved to: {file_path}\n")

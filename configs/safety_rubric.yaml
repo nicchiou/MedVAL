@@ -1,0 +1,23 @@
+# Safety rubric (safety_level: 4=safe -> 1=dangerous; analyses invert to physician direction).
+# Run from external/MedVAL/:  python run.py --config safety_rubric
+# Output: {output_dir}/{method}/safety/{model}/medval_bench.csv
+tasks: [report2impression, impression2simplified, dialogue2note, bhc2spanish, query2question, medication2answer]
+data: test
+method: zero-shot
+validator_type: safety
+
+n_samples: null
+debug: False
+input_csv: /lfs/skampere1/0/judge-reliability/data/samples/clinical_summ/medval_bench.csv
+output_dir: /lfs/skampere1/0/judge-reliability/results/medval
+
+n_runs: 3             # independent inference runs per item (stored long, `run` column)
+retry_failed: False   # True: re-run only (#, run) rows with a missing score in an existing output CSV
+max_retries: 2
+
+model: openai/gpt-5.5   # also: openai/claude-sonnet-5, openai/Llama-4
+api_base: https://aiapi-prod.stanford.edu/v1
+api_key: ${STANFORD_API_KEY}
+temperature: 1.0        # API default; gpt-5.5 rejects 0.0. Same for all models for comparability
+max_tokens: 4000          # 1000 truncates claude-sonnet-5 (finish_reason=length); reasoning tokens count too
+local_model_path: null
